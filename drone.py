@@ -1,10 +1,29 @@
 from mavsdk import System
+import keyboard
+import threading
+import serial
 from mavsdk.mission import MissionItem, MissionPlan
 import asyncio
+
+manual_control_active = False
+
+def serial_listener(serial_port):
+    global manual_control_active
+    while True:
+        if serial_port.in_waiting > 0:
+            command = serial_port.read().decode('utf-8')
+            if command == 'm':
+                manual_control_active = not manual_control_active
+                print(f"Manual Control active!")
 
 async def run():
     drone = System()
     await drone.connect(system_address="udp://:14540")
+
+    curr_pos = await drone.telemetry.position()
+    print(f"Current Position- Lat: {curr_pos.latitude_deg}, long: {curr_pos.longitude_deg}")
+
+    delta = 0.0001 #move one metre
 
     print("Waiting for drone to connect...")
     async for state in drone.core.connection_state():
@@ -46,12 +65,22 @@ async def run():
     await drone.mission.start_mission()
     print("Mission started...")
 
+    serial_port = serial.Serial('/dev/pts/3', baudrate=9600, timeout=1)
+    threading.Thread(target=serial_listener, args=(serial_port,), daemon=True).start()
+
     # Wait for the mission to complete
     async for mission_progress in drone.mission.mission_progress():
         print(f"Mission progress: {mission_progress.current}/{mission_progress.total}")
-        if mission_progress.current == mission_progress.total:
-            print("Mission completed!")
-            break
+
+        if manual_control_active:
+            print("Manual is control is active!")
+            await asyncio.sleep(1)
+            manual_control_active = not manual_control_active
+        else:
+            if mission_progress.current == mission_progress.total:
+                print("Mission completed!")
+                break
+
 
     await drone.action.return_to_launch()
 
