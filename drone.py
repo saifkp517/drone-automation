@@ -1,5 +1,4 @@
 from mavsdk import System
-import keyboard
 import threading
 import serial
 from mavsdk.mission import MissionItem, MissionPlan
@@ -7,23 +6,73 @@ import asyncio
 
 manual_control_active = False
 
-def serial_listener(serial_port):
+# Function to move drone based on command
+async def move_drone_based_on_command(command, drone):
+    print("inside function")
+    async for position in drone.telemetry.position():
+        lat = position.latitude_deg
+        lon = position.longitude_deg
+        alt = 20
+        break
+
+    if command == 'w':
+        print("Forward action triggered (North)")
+        await drone.action.goto_location(lat + 0.0001, lon, alt, 0)
+    elif command == 's':
+        print("Backward action triggered (South)")
+        await drone.action.goto_location(lat - 0.0001, lon, alt, 0)
+    elif command == 'a':
+        print("Left action triggered (West)")
+        await drone.action.goto_location(lat, lon - 0.0001, alt, 0)
+    elif command == 'd':
+        print("Right action triggered (East)")
+        await drone.action.goto_location(lat, lon + 0.0001, alt, 0)
+    elif command == 'e':
+        global manual_control_active
+        manual_control_active = False
+        print("Exiting manual control.")
+
+        # Return to launch once mission is complete
+        await drone.action.return_to_launch()
+        print("Returning to launch...")
+
+        # Land the drone
+        await drone.action.land()
+
+        await asyncio.sleep(0.1)  # Throttle the async loop
+
+# Function to handle manual control based on serial input
+async def handle_manual_control(serial_port, drone, loop):
+    global manual_control_active
+    while manual_control_active:
+        if serial_port.in_waiting > 0:
+            print("Inside manual control loop")
+            command = serial_port.read().decode('utf-8').strip()
+
+            if loop.is_running():
+                await move_drone_based_on_command(command, drone)
+                print(f"Executed Command: {command}")
+
+
+# Threaded function to listen for serial input
+async def serial_listener(serial_port, drone, loop):
     global manual_control_active
     while True:
         if serial_port.in_waiting > 0:
-            command = serial_port.read().decode('utf-8')
+            command = serial_port.read().decode('utf-8').strip()
+            print(f"Received command: {command}")
+
             if command == 'm':
                 manual_control_active = not manual_control_active
-                print(f"Manual Control active!")
+                print(f"Manual Control {'activated' if manual_control_active else 'deactivated'}!")
 
+            if manual_control_active:
+                await handle_manual_control(serial_port, drone, loop)
+
+# Main async function to run the drone mission
 async def run():
     drone = System()
     await drone.connect(system_address="udp://:14540")
-
-    curr_pos = await drone.telemetry.position()
-    print(f"Current Position- Lat: {curr_pos.latitude_deg}, long: {curr_pos.longitude_deg}")
-
-    delta = 0.0001 #move one metre
 
     print("Waiting for drone to connect...")
     async for state in drone.core.connection_state():
@@ -31,6 +80,7 @@ async def run():
             print("Drone discovered!")
             break
 
+    # Mission items setup
     mission_items = []
     mission_item = MissionItem(
         latitude_deg=47.39803986,
@@ -49,43 +99,47 @@ async def run():
         vehicle_action=MissionItem.VehicleAction.NONE
     )
     mission_items.append(mission_item)
-
     mission_plan = MissionPlan(mission_items)
 
+    # Upload mission
     print("Uploading mission...")
     await drone.mission.upload_mission(mission_plan)
     print("Mission uploaded successfully!")
 
+    # Takeoff and start the mission
     print("Drone taking off...")
     await drone.action.arm()
     await drone.action.takeoff()
     await asyncio.sleep(5)
 
+    '''
     print("Starting mission...")
     await drone.mission.start_mission()
     print("Mission started...")
+    '''
 
+    loop = asyncio.get_event_loop()
+
+    # Start the serial listener in a separate thread
     serial_port = serial.Serial('/dev/pts/3', baudrate=9600, timeout=1)
-    threading.Thread(target=serial_listener, args=(serial_port,), daemon=True).start()
 
-    # Wait for the mission to complete
+    await asyncio.gather(
+        serial_listener(serial_port, drone, loop),
+    )
+
+    # Loop for mission progress
+    '''
     async for mission_progress in drone.mission.mission_progress():
         print(f"Mission progress: {mission_progress.current}/{mission_progress.total}")
 
         if manual_control_active:
-            print("Manual is control is active!")
-            await asyncio.sleep(1)
-            manual_control_active = not manual_control_active
-        else:
-            if mission_progress.current == mission_progress.total:
-                print("Mission completed!")
-                break
+            print("Manual control is active!")
+        elif mission_progress.current == mission_progress.total:
+            print("Mission completed!")
+            break
+    '''
 
-
-    await drone.action.return_to_launch()
-
-    print("Returning to launch...")
-    await drone.action.land()
 
 if __name__ == "__main__":
     asyncio.run(run())
+
